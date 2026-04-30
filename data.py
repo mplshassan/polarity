@@ -1,4 +1,3 @@
-# mpls.hassan
 import time
 from datetime import datetime
 from difflib import get_close_matches
@@ -140,10 +139,15 @@ def get_live_game_stats(player_id):
 
         try:
             bs = boxscore.BoxScore(game_id=game_id)
-            bs_dict = bs.get_dict()["game"]
+            bs_data = bs.get_dict()
+            if "game" not in bs_data:
+                continue
+            bs_dict = bs_data["game"]
             for team_side in ["homeTeam", "awayTeam"]:
-                for player in bs_dict[team_side]["players"]:
-                    if player["personId"] == player_id:
+                if team_side not in bs_dict:
+                    continue
+                for player in bs_dict[team_side].get("players", []):
+                    if str(player.get("personId", "")) == str(player_id):
                         s = player["statistics"]
                         matchup = (
                             f"{bs_dict['awayTeam']['teamTricode']} "
@@ -175,14 +179,18 @@ def get_live_game_highs(game_id):
     """Compute per-game highs from the live boxscore endpoint."""
     try:
         bs = boxscore.BoxScore(game_id=game_id)
-        bs_dict = bs.get_dict()["game"]
+        bs_data = bs.get_dict()
+        if "game" not in bs_data:
+            return None
+        bs_dict = bs_data["game"]
     except Exception as e:
         print(f"[get_live_game_highs] error: {e}")
         return None
 
     all_players = []
     for team_side in ["homeTeam", "awayTeam"]:
-        all_players.extend(bs_dict[team_side]["players"])
+        if team_side in bs_dict:
+            all_players.extend(bs_dict[team_side].get("players", []))
 
     rows = []
     for p in all_players:
