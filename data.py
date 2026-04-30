@@ -137,16 +137,22 @@ def get_live_game_stats(player_id):
         game_status_text = game.get("gameStatusText", "")
         game_status = game.get("gameStatus", 1)  # 1=scheduled, 2=live, 3=final
 
+        # pull scores from scoreboard — more reliable than boxscore on cloud
+        home_tri = game.get("homeTeam", {}).get("teamTricode", "")
+        away_tri = game.get("awayTeam", {}).get("teamTricode", "")
+        home_score = game.get("homeTeam", {}).get("score", 0)
+        away_score = game.get("awayTeam", {}).get("score", 0)
+
         try:
             bs = boxscore.BoxScore(game_id=game_id)
             bs_data = bs.get_dict()
             if "game" not in bs_data:
                 continue
             bs_dict = bs_data["game"]
-            home_tri = bs_dict["homeTeam"]["teamTricode"]
-            away_tri = bs_dict["awayTeam"]["teamTricode"]
-            home_score = bs_dict["homeTeam"].get("score", 0)
-            away_score = bs_dict["awayTeam"].get("score", 0)
+            if not home_tri:
+                home_tri = bs_dict["homeTeam"]["teamTricode"]
+            if not away_tri:
+                away_tri = bs_dict["awayTeam"]["teamTricode"]
             for team_side in ["homeTeam", "awayTeam"]:
                 if team_side not in bs_dict:
                     continue
