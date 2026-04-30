@@ -110,9 +110,7 @@ def get_game_stats(player_id, date_obj=None):
 
     current = get_current_season()
     current_year = int(current.split("-")[0])
-    seasons = [
-        f"{y}-{str(y + 1)[-2:]}" for y in range(current_year, current_year - 10, -1)
-    ]
+    seasons = [f"{y}-{str(y + 1)[-2:]}" for y in range(current_year, 1946, -1)]
 
     for season in seasons:
         df = _fetch_season_games(player_id, season)

@@ -35,7 +35,11 @@ with st.sidebar:
     # date selection
     use_specific_date = st.checkbox("Search specific date")
     sel_date = (
-        st.date_input("Game date", max_value=datetime.now().date())
+        st.date_input(
+            "Game date",
+            min_value=datetime(1946, 1, 1).date(),
+            max_value=datetime.now().date(),
+        )
         if use_specific_date
         else None
     )
