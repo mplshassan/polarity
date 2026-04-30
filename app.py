@@ -363,7 +363,6 @@ if "player_data" in st.session_state:
         _, raw1 = get_fracs_and_raws(player, combined_highs)
         _, raw2 = get_fracs_and_raws(player2, combined_highs)
 
-        st.subheader("Detailed Comparison")
         comparison_df = pd.DataFrame(
             [
                 {
