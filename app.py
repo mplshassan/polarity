@@ -6,8 +6,8 @@ import pandas as pd
 import streamlit as st
 
 import data
-from config import ACCENT, CUSTOM_CSS, TEAM_COLORS
 from charts import build_comparison_figure, build_single_player_figure
+from config import ACCENT, CUSTOM_CSS, TEAM_COLORS
 from processing import get_fracs_and_raws, team_from_matchup, validate_player_data
 
 # page config
@@ -96,12 +96,16 @@ if search_btn:
             with st.spinner("Fetching data for both players…"):
                 all_players = data.get_all_players()
 
-                player1_id, resolved_name1 = data.get_player_id(player_name, all_players)
+                player1_id, resolved_name1 = data.get_player_id(
+                    player_name, all_players
+                )
                 if not player1_id:
                     st.error(f"Player 1 not found: {player_name}")
                     st.stop()
 
-                player2_id, resolved_name2 = data.get_player_id(player2_name, all_players)
+                player2_id, resolved_name2 = data.get_player_id(
+                    player2_name, all_players
+                )
                 if not player2_id:
                     st.error(f"Player 2 not found: {player2_name}")
                     st.stop()
@@ -158,7 +162,7 @@ if "player_data" in st.session_state:
             (c1, "Points", int(player["PTS"])),
             (c2, "Rebounds", int(player["REB"])),
             (c3, "Assists", int(player["AST"])),
-            (c4, "Stocks", int(player["STL"]) + int(player["BLK"])),
+            (c4, "STOCKS", int(player["STL"]) + int(player["BLK"])),
         ]
         for col, label, val in stats:
             col.markdown(
@@ -173,13 +177,23 @@ if "player_data" in st.session_state:
 
         # detail table
         _, raw = get_fracs_and_raws(player, highs)
-        detail_df = pd.DataFrame([
-            {"Stat": "Points", "Value": raw["PTS"], "Game High": highs["PTS"]},
-            {"Stat": "Rebounds", "Value": raw["REB"], "Game High": highs["REB"]},
-            {"Stat": "Assists", "Value": raw["AST"], "Game High": highs["AST"]},
-            {"Stat": "Stocks", "Value": raw["STOCKS"], "Game High": highs["STOCKS"]},
-            {"Stat": "TS%", "Value": round(raw["TS%"] * 100, 1), "Game High": round(highs["TS%"] * 100, 1)},
-        ])
+        detail_df = pd.DataFrame(
+            [
+                {"Stat": "Points", "Value": raw["PTS"], "Game High": highs["PTS"]},
+                {"Stat": "Rebounds", "Value": raw["REB"], "Game High": highs["REB"]},
+                {"Stat": "Assists", "Value": raw["AST"], "Game High": highs["AST"]},
+                {
+                    "Stat": "STOCKS",
+                    "Value": raw["STOCKS"],
+                    "Game High": highs["STOCKS"],
+                },
+                {
+                    "Stat": "TS%",
+                    "Value": round(raw["TS%"] * 100, 1),
+                    "Game High": round(highs["TS%"] * 100, 1),
+                },
+            ]
+        )
 
         st.dataframe(
             detail_df,
@@ -262,8 +276,12 @@ if "player_data" in st.session_state:
         }
 
         fig = build_comparison_figure(
-            player, resolved_name1, color1,
-            player2, resolved_name2, color2,
+            player,
+            resolved_name1,
+            color1,
+            player2,
+            resolved_name2,
+            color2,
             combined_highs,
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -273,20 +291,51 @@ if "player_data" in st.session_state:
         _, raw2 = get_fracs_and_raws(player2, combined_highs)
 
         st.subheader("Detailed Comparison")
-        comparison_df = pd.DataFrame([
-            {"Stat": "Points", resolved_name1: raw1["PTS"], resolved_name2: raw2["PTS"], "Game High": combined_highs["PTS"]},
-            {"Stat": "Rebounds", resolved_name1: raw1["REB"], resolved_name2: raw2["REB"], "Game High": combined_highs["REB"]},
-            {"Stat": "Assists", resolved_name1: raw1["AST"], resolved_name2: raw2["AST"], "Game High": combined_highs["AST"]},
-            {"Stat": "Stocks", resolved_name1: raw1["STOCKS"], resolved_name2: raw2["STOCKS"], "Game High": combined_highs["STOCKS"]},
-            {"Stat": "TS%", resolved_name1: round(raw1["TS%"] * 100, 1), resolved_name2: round(raw2["TS%"] * 100, 1), "Game High": round(combined_highs["TS%"] * 100, 1)},
-        ])
+        comparison_df = pd.DataFrame(
+            [
+                {
+                    "Stat": "Points",
+                    resolved_name1: raw1["PTS"],
+                    resolved_name2: raw2["PTS"],
+                    "Game High": combined_highs["PTS"],
+                },
+                {
+                    "Stat": "Rebounds",
+                    resolved_name1: raw1["REB"],
+                    resolved_name2: raw2["REB"],
+                    "Game High": combined_highs["REB"],
+                },
+                {
+                    "Stat": "Assists",
+                    resolved_name1: raw1["AST"],
+                    resolved_name2: raw2["AST"],
+                    "Game High": combined_highs["AST"],
+                },
+                {
+                    "Stat": "Stocks",
+                    resolved_name1: raw1["STOCKS"],
+                    resolved_name2: raw2["STOCKS"],
+                    "Game High": combined_highs["STOCKS"],
+                },
+                {
+                    "Stat": "TS%",
+                    resolved_name1: round(raw1["TS%"] * 100, 1),
+                    resolved_name2: round(raw2["TS%"] * 100, 1),
+                    "Game High": round(combined_highs["TS%"] * 100, 1),
+                },
+            ]
+        )
 
         st.dataframe(
             comparison_df,
             column_config={
                 "Stat": st.column_config.TextColumn("Stat", width="small"),
-                resolved_name1: st.column_config.TextColumn(resolved_name1, width="small"),
-                resolved_name2: st.column_config.TextColumn(resolved_name2, width="small"),
+                resolved_name1: st.column_config.TextColumn(
+                    resolved_name1, width="small"
+                ),
+                resolved_name2: st.column_config.TextColumn(
+                    resolved_name2, width="small"
+                ),
                 "Game High": st.column_config.TextColumn("Game High", width="small"),
             },
             hide_index=True,
