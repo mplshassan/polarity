@@ -143,16 +143,17 @@ def get_live_game_stats(player_id):
             if "game" not in bs_data:
                 continue
             bs_dict = bs_data["game"]
+            home_tri = bs_dict["homeTeam"]["teamTricode"]
+            away_tri = bs_dict["awayTeam"]["teamTricode"]
+            home_score = bs_dict["homeTeam"].get("score", 0)
+            away_score = bs_dict["awayTeam"].get("score", 0)
             for team_side in ["homeTeam", "awayTeam"]:
                 if team_side not in bs_dict:
                     continue
                 for player in bs_dict[team_side].get("players", []):
                     if str(player.get("personId", "")) == str(player_id):
                         s = player["statistics"]
-                        matchup = (
-                            f"{bs_dict['awayTeam']['teamTricode']} "
-                            f"@ {bs_dict['homeTeam']['teamTricode']}"
-                        )
+                        matchup = f"{away_tri} @ {home_tri}"
                         return {
                             "PTS": float(s.get("points", 0)),
                             "REB": float(s.get("reboundsTotal", 0)),
@@ -167,6 +168,10 @@ def get_live_game_stats(player_id):
                             "LIVE": True,
                             "GAME_STATUS": game_status_text,
                             "GAME_STATUS_CODE": game_status,
+                            "HOME_TRICODE": home_tri,
+                            "AWAY_TRICODE": away_tri,
+                            "HOME_SCORE": home_score,
+                            "AWAY_SCORE": away_score,
                         }
         except Exception as e:
             print(f"[get_live_game_stats] boxscore error game={game_id}: {e}")

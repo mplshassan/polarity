@@ -80,6 +80,41 @@ def _get_highs(game):
     return data.get_game_highs(game["Game_ID"])
 
 
+def _score_line(p):
+    """Build a score string like 'CLE 99 @ LAL 112' from a live game dict."""
+    away = p.get("AWAY_TRICODE", "")
+    home = p.get("HOME_TRICODE", "")
+    away_score = p.get("AWAY_SCORE", "")
+    home_score = p.get("HOME_SCORE", "")
+    if away and home and away_score != "" and home_score != "":
+        return f"{away} {away_score} @ {home} {home_score}"
+    return p.get("MATCHUP", "—")
+
+
+def live_badge(p, matchup, game_date):
+    caption = f"{matchup}  ·  {game_date}"
+    if p.get("LIVE"):
+        status_code = p.get("GAME_STATUS_CODE", 1)
+        status_text = p.get("GAME_STATUS", "")
+        score_line = _score_line(p)
+        if status_code == 2:
+            # in-progress: show score + game clock/period from status_text
+            badge = (
+                f'<span style="color:#e81648; font-weight:700;">'
+                f"LIVE — {score_line} &nbsp;·&nbsp; {status_text}"
+                f"</span>"
+            )
+        else:
+            # final: show score
+            badge = (
+                f'<span style="color:#888; font-weight:600;">'
+                f"FINAL — {score_line}"
+                f"</span>"
+            )
+        return caption, badge
+    return caption, None
+
+
 # data fetch
 if search_btn:
     if mode == "Single":
@@ -182,18 +217,10 @@ if "player_data" in st.session_state:
 
         st.title(resolved_name)
 
-        # live badge or regular caption
-        if player.get("LIVE"):
-            status_code = player.get("GAME_STATUS_CODE", 1)
-            status_text = player.get("GAME_STATUS", "")
-            if status_code == 2:
-                badge = f'<span style="color:#e81648; font-weight:700;">LIVE — {status_text}</span>'
-            else:
-                badge = f'<span style="color:#888; font-weight:600;">FINAL — {status_text}</span>'
-            st.caption(f"{matchup}  ·  {game_date}")
+        cap, badge = live_badge(player, matchup, game_date)
+        st.caption(cap)
+        if badge:
             st.markdown(badge, unsafe_allow_html=True)
-        else:
-            st.caption(f"{matchup}  ·  {game_date}")
 
         # stat cards
         c1, c2, c3, c4 = st.columns(4)
@@ -270,19 +297,6 @@ if "player_data" in st.session_state:
 
         # comparison header
         st.title(f"{resolved_name1} vs {resolved_name2}")
-
-        # live badges for each player if applicable
-        def live_badge(p, matchup, game_date):
-            caption = f"{matchup}  ·  {game_date}"
-            if p.get("LIVE"):
-                status_code = p.get("GAME_STATUS_CODE", 1)
-                status_text = p.get("GAME_STATUS", "")
-                if status_code == 2:
-                    badge = f'<span style="color:#e81648; font-weight:700;">LIVE — {status_text}</span>'
-                else:
-                    badge = f'<span style="color:#888; font-weight:600;">FINAL — {status_text}</span>'
-                return caption, badge
-            return caption, None
 
         cap1, badge1 = live_badge(player, matchup1, game_date1)
         cap2, badge2 = live_badge(player2, matchup2, game_date2)
