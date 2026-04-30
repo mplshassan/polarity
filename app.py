@@ -37,7 +37,7 @@ with st.sidebar:
     sel_date = (
         st.date_input(
             "Game date",
-            min_value=datetime(1946, 1, 1).date(),
+            min_value=datetime(1979, 1, 1).date(),
             max_value=datetime.now().date(),
         )
         if use_specific_date
