@@ -59,6 +59,27 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Find your favorite player's polarity!")
 
+
+def _fetch_player_game(player_id, resolved_name, use_specific_date, sel_date):
+    """
+    Try live first (unless a specific date is requested), then fall back to
+    the historical game log. Returns (game_dict, is_live).
+    """
+    if not use_specific_date:
+        live = data.get_live_game_stats(player_id)
+        if live is not None:
+            return live, True
+    historical = data.get_game_stats(player_id, sel_date)
+    return historical, False
+
+
+def _get_highs(game):
+    """Return highs from the right endpoint depending on whether the game is live."""
+    if game.get("LIVE"):
+        return data.get_live_game_highs(game["Game_ID"])
+    return data.get_game_highs(game["Game_ID"])
+
+
 # data fetch
 if search_btn:
     if mode == "Single":
@@ -72,7 +93,9 @@ if search_btn:
                 if not player_id:
                     st.error("Player not found. Try a different spelling.")
                 else:
-                    game = data.get_game_stats(player_id, sel_date)
+                    game, is_live = _fetch_player_game(
+                        player_id, resolved_name, use_specific_date, sel_date
+                    )
                     if game is None:
                         msg = (
                             "No game found on that date."
@@ -110,8 +133,12 @@ if search_btn:
                     st.error(f"Player 2 not found: {player2_name}")
                     st.stop()
 
-                game1 = data.get_game_stats(player1_id, sel_date)
-                game2 = data.get_game_stats(player2_id, sel_date)
+                game1, _ = _fetch_player_game(
+                    player1_id, resolved_name1, use_specific_date, sel_date
+                )
+                game2, _ = _fetch_player_game(
+                    player2_id, resolved_name2, use_specific_date, sel_date
+                )
 
                 if game1 is None:
                     st.error(f"No game data found for {resolved_name1}")
@@ -143,7 +170,7 @@ if "player_data" in st.session_state:
             st.error(f"Incomplete data from NBA API (missing: {', '.join(missing)}).")
             st.stop()
 
-        highs = data.get_game_highs(game_id)
+        highs = _get_highs(player)
         if highs is None:
             st.error("Could not load box-score data for this game.")
             st.stop()
@@ -154,7 +181,19 @@ if "player_data" in st.session_state:
         matchup = player.get("MATCHUP", "—")
 
         st.title(resolved_name)
-        st.caption(f"{matchup}  ·  {game_date}")
+
+        # live badge or regular caption
+        if player.get("LIVE"):
+            status_code = player.get("GAME_STATUS_CODE", 1)
+            status_text = player.get("GAME_STATUS", "")
+            if status_code == 2:
+                badge = f'<span style="color:#e81648; font-weight:700;">LIVE — {status_text}</span>'
+            else:
+                badge = f'<span style="color:#888; font-weight:600;">FINAL — {status_text}</span>'
+            st.caption(f"{matchup}  ·  {game_date}")
+            st.markdown(badge, unsafe_allow_html=True)
+        else:
+            st.caption(f"{matchup}  ·  {game_date}")
 
         # stat cards
         c1, c2, c3, c4 = st.columns(4)
@@ -211,11 +250,9 @@ if "player_data" in st.session_state:
         player2 = st.session_state["player2_data"]
         resolved_name1 = st.session_state["resolved_name"]
         resolved_name2 = st.session_state["resolved_name2"]
-        game1_id = st.session_state["game_id"]
-        game2_id = st.session_state["game2_id"]
 
-        highs1 = data.get_game_highs(game1_id)
-        highs2 = data.get_game_highs(game2_id)
+        highs1 = _get_highs(player)
+        highs2 = _get_highs(player2)
 
         if highs1 is None or highs2 is None:
             st.error("Could not load box-score data for one of the games.")
@@ -233,7 +270,29 @@ if "player_data" in st.session_state:
 
         # comparison header
         st.title(f"{resolved_name1} vs {resolved_name2}")
-        st.caption(f"{matchup1} · {game_date1}  |  {matchup2} · {game_date2}")
+
+        # live badges for each player if applicable
+        def live_badge(p, matchup, game_date):
+            caption = f"{matchup}  ·  {game_date}"
+            if p.get("LIVE"):
+                status_code = p.get("GAME_STATUS_CODE", 1)
+                status_text = p.get("GAME_STATUS", "")
+                if status_code == 2:
+                    badge = f'<span style="color:#e81648; font-weight:700;">LIVE — {status_text}</span>'
+                else:
+                    badge = f'<span style="color:#888; font-weight:600;">FINAL — {status_text}</span>'
+                return caption, badge
+            return caption, None
+
+        cap1, badge1 = live_badge(player, matchup1, game_date1)
+        cap2, badge2 = live_badge(player2, matchup2, game_date2)
+        combined_caption = f"{cap1}  |  {cap2}"
+        st.caption(combined_caption)
+        if badge1 or badge2:
+            b1 = badge1 or ""
+            b2 = badge2 or ""
+            sep = "  &nbsp;|&nbsp;  " if badge1 and badge2 else ""
+            st.markdown(b1 + sep + b2, unsafe_allow_html=True)
 
         # comparison stat cards
         col1, col2 = st.columns(2)

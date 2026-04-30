@@ -5,6 +5,7 @@ from difflib import get_close_matches
 
 import pandas as pd
 import streamlit as st
+from nba_api.live.nba.endpoints import boxscore, scoreboard
 from nba_api.stats.endpoints import BoxScoreTraditionalV3, PlayerGameLog
 from nba_api.stats.static import players
 
@@ -17,6 +18,7 @@ SEASON_TYPES = [
     "Regular Season",
     "Playoffs",
 ]
+
 
 # utilities
 def calculate_ts_pct(pts, fga, fta):
@@ -119,6 +121,104 @@ def get_game_stats(player_id, date_obj=None):
             return df.sort_values("MATCH_DATE", ascending=False).iloc[0]
 
     return None
+
+
+# no cache — always fresh for live data
+def get_live_game_stats(player_id):
+    """Returns live game stats for a player if they have a game today, else None."""
+    try:
+        today = scoreboard.ScoreBoard()
+        games = today.get_dict()["scoreboard"]["games"]
+    except Exception as e:
+        print(f"[get_live_game_stats] scoreboard error: {e}")
+        return None
+
+    for game in games:
+        game_id = game["gameId"]
+        game_status_text = game.get("gameStatusText", "")
+        game_status = game.get("gameStatus", 1)  # 1=scheduled, 2=live, 3=final
+
+        try:
+            bs = boxscore.BoxScore(game_id=game_id)
+            bs_dict = bs.get_dict()["game"]
+            for team_side in ["homeTeam", "awayTeam"]:
+                for player in bs_dict[team_side]["players"]:
+                    if player["personId"] == player_id:
+                        s = player["statistics"]
+                        matchup = (
+                            f"{bs_dict['awayTeam']['teamTricode']} "
+                            f"@ {bs_dict['homeTeam']['teamTricode']}"
+                        )
+                        return {
+                            "PTS": float(s.get("points", 0)),
+                            "REB": float(s.get("reboundsTotal", 0)),
+                            "AST": float(s.get("assists", 0)),
+                            "STL": float(s.get("steals", 0)),
+                            "BLK": float(s.get("blocks", 0)),
+                            "FGA": float(s.get("fieldGoalsAttempted", 0)),
+                            "FTA": float(s.get("freeThrowsAttempted", 0)),
+                            "Game_ID": game_id,
+                            "MATCHUP": matchup,
+                            "GAME_DATE": datetime.now().strftime("%Y-%m-%d"),
+                            "LIVE": True,
+                            "GAME_STATUS": game_status_text,
+                            "GAME_STATUS_CODE": game_status,
+                        }
+        except Exception as e:
+            print(f"[get_live_game_stats] boxscore error game={game_id}: {e}")
+            continue
+
+    return None
+
+
+def get_live_game_highs(game_id):
+    """Compute per-game highs from the live boxscore endpoint."""
+    try:
+        bs = boxscore.BoxScore(game_id=game_id)
+        bs_dict = bs.get_dict()["game"]
+    except Exception as e:
+        print(f"[get_live_game_highs] error: {e}")
+        return None
+
+    all_players = []
+    for team_side in ["homeTeam", "awayTeam"]:
+        all_players.extend(bs_dict[team_side]["players"])
+
+    rows = []
+    for p in all_players:
+        s = p.get("statistics", {})
+        # only include players with meaningful minutes
+        mins_str = s.get("minutesCalculated", "PT0M")
+        try:
+            mins = float(mins_str.replace("PT", "").replace("M", ""))
+        except ValueError:
+            mins = 0.0
+        if mins < 10:
+            continue
+        pts = float(s.get("points", 0))
+        fga = float(s.get("fieldGoalsAttempted", 0))
+        fta = float(s.get("freeThrowsAttempted", 0))
+        rows.append(
+            {
+                "PTS": pts,
+                "REB": float(s.get("reboundsTotal", 0)),
+                "AST": float(s.get("assists", 0)),
+                "STOCKS": float(s.get("steals", 0)) + float(s.get("blocks", 0)),
+                "TS%": calculate_ts_pct(pts, fga, fta),
+            }
+        )
+
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows)
+    return {
+        "PTS": df["PTS"].max(),
+        "REB": df["REB"].max(),
+        "AST": df["AST"].max(),
+        "STOCKS": df["STOCKS"].max(),
+        "TS%": df["TS%"].max(),
+    }
 
 
 @st.cache_data(ttl=300, show_spinner=False)
