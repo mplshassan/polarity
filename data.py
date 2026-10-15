@@ -1,17 +1,25 @@
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from difflib import get_close_matches
 
 import pandas as pd
 import streamlit as st
 from nba_api.live.nba.endpoints import boxscore, scoreboard
-from nba_api.stats.endpoints import BoxScoreTraditionalV3, PlayerGameLog
+from nba_api.stats.endpoints import (
+    BoxScoreTraditionalV3,
+    PlayerCareerStats,
+    PlayerGameLog,
+)
 from nba_api.stats.static import players
 
-# config
-TIMEOUT = 60
-MAX_RETRIES = 3
-RETRY_DELAY = 2
+# config -- fail fast: a blocked/throttled cloud IP used to cost 60s x 3 tries per call
+TIMEOUT = 20
+MAX_RETRIES = 2
+RETRY_DELAY = 1
+LIVE_TTL = 20  # seconds to reuse scoreboard/boxscore responses
+FALLBACK_SEASONS = 4  # only used if the career-stats lookup fails
 
 SEASON_TYPES = [
     "Regular Season",
@@ -62,144 +70,259 @@ def get_all_players():
     return players.get_players()
 
 
-def get_player_id(name, player_list):
+@st.cache_data(ttl=3600, show_spinner=False)
+def _player_index():
+    """Built once: lowercase-name -> (id, name), the name list, and active ids."""
+    plist = players.get_players()
+    by_lower = {p["full_name"].lower(): (p["id"], p["full_name"]) for p in plist}
+    names = [p["full_name"] for p in plist]
+    active = {p["id"] for p in plist if p["is_active"]}
+    return by_lower, names, active
+
+
+def get_player_id(name, player_list=None):
     if not name or not name.strip():
         return None, None
-    names = [p["full_name"] for p in player_list]
-    matches = get_close_matches(name.strip(), names, n=1, cutoff=0.6)
+    by_lower, names, _ = _player_index()
+    name = name.strip()
+    # exact (case-insensitive) match skips fuzzy matching entirely
+    hit = by_lower.get(name.lower())
+    if hit:
+        return hit
+    matches = get_close_matches(name, names, n=1, cutoff=0.6)
     if not matches:
         return None, None
-    for p in player_list:
-        if p["full_name"] == matches[0]:
-            return p["id"], matches[0]
-    return None, None
+    return by_lower[matches[0].lower()]
 
 
-def _fetch_season_games(player_id, season):
+@st.cache_data(ttl=600, show_spinner=False)
+def _fetch_game_log(player_id, season, stype):
+    """One PlayerGameLog call. Raises on failure (so failures are never cached)."""
+    t0 = time.perf_counter()
+    try:
+        log = _retry_call(
+            PlayerGameLog,
+            player_id=player_id,
+            season=season,
+            season_type_all_star=stype,
+            timeout=TIMEOUT,
+        )
+        df = log.get_data_frames()[0]
+    except Exception as e:
+        print(
+            f"[game_log] season={season} type={stype} FAILED "
+            f"{time.perf_counter() - t0:.1f}s: {e}"
+        )
+        raise
+    print(
+        f"[game_log] season={season} type={stype} "
+        f"{time.perf_counter() - t0:.1f}s empty={df.empty}"
+    )
+    if not df.empty:
+        df = df.copy()
+        df["SEASON_TYPE"] = stype
+        # format='mixed' handles both "Apr 25, 2026" and "2026-04-25"
+        df["MATCH_DATE"] = pd.to_datetime(df["GAME_DATE"], format="mixed").dt.date
+    return df
+
+
+def _season_games(player_id, season, season_types):
+    """Concatenate game logs for the given season types. Errors are logged, not raised."""
     frames = []
-    for stype in SEASON_TYPES:
+    for stype in season_types:
         try:
-            log = _retry_call(
-                PlayerGameLog,
-                player_id=player_id,
-                season=season,
-                season_type_all_star=stype,
-                timeout=TIMEOUT,
-            )
-            df = log.get_data_frames()[0]
-            if not df.empty:
-                df["SEASON_TYPE"] = stype
-                # format='mixed' handles both "Apr 25, 2026" and "2026-04-25"
-                df["MATCH_DATE"] = pd.to_datetime(
-                    df["GAME_DATE"], format="mixed"
-                ).dt.date
-                frames.append(df)
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"[_fetch_season_games] season={season} type={stype} error: {e}")
+            df = _fetch_game_log(player_id, season, stype)
+        except Exception:
+            continue
+        if not df.empty:
+            frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _career_seasons(player_id):
+    """One call that replaces the season-by-season guessing loop.
+
+    Returns (last_regular_season, last_playoff_season); either can be None.
+    """
+    t0 = time.perf_counter()
+    c = _retry_call(PlayerCareerStats, player_id=player_id, timeout=TIMEOUT)
+    reg = c.season_totals_regular_season.get_data_frame()
+    post = c.season_totals_post_season.get_data_frame()
+    print(f"[career] player={player_id} {time.perf_counter() - t0:.1f}s")
+    last_reg = reg["SEASON_ID"].max() if not reg.empty else None
+    last_post = post["SEASON_ID"].max() if not post.empty else None
+    return last_reg, last_post
+
+
+def _latest_row(df):
+    df = df.dropna(subset=["MATCH_DATE"])
+    if df.empty:
+        return None
+    return df.sort_values("MATCH_DATE", ascending=False).iloc[0]
 
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_game_stats(player_id, date_obj=None):
-    if date_obj:
-        season = date_to_season(date_obj)
-        target_date = pd.to_datetime(date_obj).date()
-        df = _fetch_season_games(player_id, season)
+    t0 = time.perf_counter()
+    try:
+        if date_obj:
+            return _game_on_date(player_id, date_obj)
+        return _latest_game(player_id)
+    finally:
+        print(f"[get_game_stats] player={player_id} date={date_obj} "
+              f"total={time.perf_counter() - t0:.1f}s")
+
+
+def _game_on_date(player_id, date_obj):
+    season = date_to_season(date_obj)
+    target = pd.to_datetime(date_obj).date()
+    # regular season first (most dates live there); only hit playoffs if no match
+    for stype in SEASON_TYPES:
+        df = _season_games(player_id, season, [stype])
         if df.empty:
-            return None
-        mask = df["MATCH_DATE"] == target_date
-        return df[mask].iloc[0] if mask.any() else None
-
-    current = get_current_season()
-    current_year = int(current.split("-")[0])
-    seasons = [f"{y}-{str(y + 1)[-2:]}" for y in range(current_year, 1946, -1)]
-
-    # fix
-    for season in seasons:
-        df = _fetch_season_games(player_id, season)
-        if not df.empty:
-            df = df.dropna(subset=["MATCH_DATE"])
-            if not df.empty:
-                return df.sort_values("MATCH_DATE", ascending=False).iloc[0]
-
+            continue
+        hit = df[df["MATCH_DATE"] == target]
+        if not hit.empty:
+            return hit.iloc[0]
     return None
 
 
-# no cache — always fresh for live data
-def get_live_game_stats(player_id):
-    """Returns live game stats for a player if they have a game today, else None."""
+def _latest_game(player_id):
     try:
-        today = scoreboard.ScoreBoard()
-        games = today.get_dict()["scoreboard"]["games"]
+        last_reg, last_post = _career_seasons(player_id)
     except Exception as e:
-        print(f"[get_live_game_stats] scoreboard error: {e}")
+        print(f"[get_game_stats] career lookup failed, using fallback: {e}")
+        return _latest_game_fallback(player_id)
+
+    if last_reg is None and last_post is None:
         return None
 
-    for game in games:
-        game_id = game["gameId"]
-        game_status_text = game.get("gameStatusText", "")
-        game_status = game.get("gameStatus", 1)  # 1=scheduled, 2=live, 3=final
+    # playoffs always come after the regular season of the same year, so if the
+    # last playoff season is >= the last regular season, the newest game is there
+    if last_post is not None and (last_reg is None or last_post >= last_reg):
+        order = [(last_post, "Playoffs"), (last_reg, "Regular Season")]
+    else:
+        order = [(last_reg, "Regular Season")]
 
-        # pull scores from scoreboard — more reliable than boxscore on cloud
-        home_tri = game.get("homeTeam", {}).get("teamTricode", "")
-        away_tri = game.get("awayTeam", {}).get("teamTricode", "")
-        home_score = game.get("homeTeam", {}).get("score", 0)
-        away_score = game.get("awayTeam", {}).get("score", 0)
-
-        try:
-            bs = boxscore.BoxScore(game_id=game_id)
-            bs_data = bs.get_dict()
-            if "game" not in bs_data:
-                continue
-            bs_dict = bs_data["game"]
-            if not home_tri:
-                home_tri = bs_dict["homeTeam"]["teamTricode"]
-            if not away_tri:
-                away_tri = bs_dict["awayTeam"]["teamTricode"]
-            for team_side in ["homeTeam", "awayTeam"]:
-                if team_side not in bs_dict:
-                    continue
-                for player in bs_dict[team_side].get("players", []):
-                    if str(player.get("personId", "")) == str(player_id):
-                        s = player["statistics"]
-                        matchup = f"{away_tri} @ {home_tri}"
-                        return {
-                            "PTS": float(s.get("points", 0)),
-                            "REB": float(s.get("reboundsTotal", 0)),
-                            "AST": float(s.get("assists", 0)),
-                            "STL": float(s.get("steals", 0)),
-                            "BLK": float(s.get("blocks", 0)),
-                            "FGA": float(s.get("fieldGoalsAttempted", 0)),
-                            "FTA": float(s.get("freeThrowsAttempted", 0)),
-                            "Game_ID": game_id,
-                            "MATCHUP": matchup,
-                            "GAME_DATE": datetime.now().strftime("%Y-%m-%d"),
-                            "LIVE": True,
-                            "GAME_STATUS": game_status_text,
-                            "GAME_STATUS_CODE": game_status,
-                            "HOME_TRICODE": home_tri,
-                            "AWAY_TRICODE": away_tri,
-                            "HOME_SCORE": home_score,
-                            "AWAY_SCORE": away_score,
-                        }
-        except Exception as e:
-            print(f"[get_live_game_stats] boxscore error game={game_id}: {e}")
+    for season, stype in order:
+        if season is None:
             continue
+        df = _season_games(player_id, season, [stype])
+        row = _latest_row(df) if not df.empty else None
+        if row is not None:
+            return row
+    return None
 
+
+def _latest_game_fallback(player_id):
+    """Career endpoint unavailable: check a few recent seasons only (never back to 1947)."""
+    current_year = int(get_current_season().split("-")[0])
+    for y in range(current_year, current_year - FALLBACK_SEASONS, -1):
+        season = f"{y}-{str(y + 1)[-2:]}"
+        # newest games are playoffs; stop at the first season type that has data
+        for stype in reversed(SEASON_TYPES):
+            df = _season_games(player_id, season, [stype])
+            row = _latest_row(df) if not df.empty else None
+            if row is not None:
+                return row
+    return None
+
+
+# live data: short in-process TTL cache (shared by Single, Flux, and highs lookups)
+_live_cache = {}
+_live_lock = threading.Lock()
+
+
+def _live_cached(key, fetch):
+    now = time.time()
+    with _live_lock:
+        hit = _live_cache.get(key)
+        if hit and now - hit[0] < LIVE_TTL:
+            return hit[1]
+    try:
+        val = fetch()
+    except Exception as e:
+        print(f"[live] {key} error: {e}")
+        val = None
+    with _live_lock:
+        _live_cache[key] = (time.time(), val)
+    return val
+
+
+def _get_scoreboard_games():
+    def f():
+        return scoreboard.ScoreBoard(timeout=TIMEOUT).get_dict()["scoreboard"]["games"]
+
+    return _live_cached("scoreboard", f) or []
+
+
+def _get_live_boxscore(game_id):
+    def f():
+        d = boxscore.BoxScore(game_id=game_id, timeout=TIMEOUT).get_dict()
+        return d.get("game")
+
+    return _live_cached(f"box:{game_id}", f)
+
+
+def _player_line(bs_dict, game, player_id):
+    """Pull one player's line out of a boxscore dict, or None if he isn't in it."""
+    game_id = game["gameId"]
+    home_tri = game.get("homeTeam", {}).get("teamTricode", "") or bs_dict["homeTeam"]["teamTricode"]
+    away_tri = game.get("awayTeam", {}).get("teamTricode", "") or bs_dict["awayTeam"]["teamTricode"]
+    for side in ("homeTeam", "awayTeam"):
+        for p in bs_dict.get(side, {}).get("players", []):
+            if str(p.get("personId", "")) == str(player_id):
+                s = p["statistics"]
+                return {
+                    "PTS": float(s.get("points", 0)),
+                    "REB": float(s.get("reboundsTotal", 0)),
+                    "AST": float(s.get("assists", 0)),
+                    "STL": float(s.get("steals", 0)),
+                    "BLK": float(s.get("blocks", 0)),
+                    "FGA": float(s.get("fieldGoalsAttempted", 0)),
+                    "FTA": float(s.get("freeThrowsAttempted", 0)),
+                    "Game_ID": game_id,
+                    "MATCHUP": f"{away_tri} @ {home_tri}",
+                    "GAME_DATE": datetime.now().strftime("%Y-%m-%d"),
+                    "LIVE": True,
+                    "GAME_STATUS": game.get("gameStatusText", ""),
+                    "GAME_STATUS_CODE": game.get("gameStatus", 1),
+                    "HOME_TRICODE": home_tri,
+                    "AWAY_TRICODE": away_tri,
+                    "HOME_SCORE": game.get("homeTeam", {}).get("score", 0),
+                    "AWAY_SCORE": game.get("awayTeam", {}).get("score", 0),
+                }
+    return None
+
+
+def get_live_game_stats(player_id):
+    """Returns live game stats for a player if they have a game today, else None."""
+    # retired players can't be in a live game: skip every network call
+    if player_id not in _player_index()[2]:
+        return None
+
+    # scheduled games (status 1) have no boxscore yet, so only look at started games
+    started = [g for g in _get_scoreboard_games() if g.get("gameStatus", 1) >= 2]
+    if not started:
+        return None
+
+    def check(game):
+        bs = _get_live_boxscore(game["gameId"])
+        return _player_line(bs, game, player_id) if bs else None
+
+    # one request per game, in parallel instead of one after another
+    with ThreadPoolExecutor(max_workers=min(8, len(started))) as ex:
+        for line in ex.map(check, started):
+            if line is not None:
+                return line
     return None
 
 
 def get_live_game_highs(game_id):
     """Compute per-game highs from the live boxscore endpoint."""
-    try:
-        bs = boxscore.BoxScore(game_id=game_id)
-        bs_data = bs.get_dict()
-        if "game" not in bs_data:
-            return None
-        bs_dict = bs_data["game"]
-    except Exception as e:
-        print(f"[get_live_game_highs] error: {e}")
+    bs_dict = _get_live_boxscore(game_id)
+    if bs_dict is None:
         return None
 
     all_players = []
