@@ -73,7 +73,15 @@ def _fetch_player_game(player_id, resolved_name, use_specific_date, sel_date):
         live = data.get_live_game_stats(player_id)
         if live is not None:
             return live, True
-    historical = data.get_game_stats(player_id, sel_date)
+    try:
+        historical = data.get_game_stats(player_id, sel_date)
+    except data.DataUnavailable as e:
+        st.error(
+            f"Couldn't reach the NBA stats server for {resolved_name}. "
+            "It may be slow or blocking this host. Try again in a minute."
+        )
+        st.caption(f"Details: {e}")
+        st.stop()
     return historical, False
 
 

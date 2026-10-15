@@ -52,6 +52,10 @@ def date_to_season(date_obj):
     )
 
 
+class DataUnavailable(Exception):
+    """The NBA stats API couldn't be reached (as opposed to 'player has no games')."""
+
+
 def _retry_call(func, *args, **kwargs):
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -127,15 +131,22 @@ def _fetch_game_log(player_id, season, stype):
 
 
 def _season_games(player_id, season, season_types):
-    """Concatenate game logs for the given season types. Errors are logged, not raised."""
-    frames = []
+    """Concatenate game logs for the given season types.
+
+    Raises DataUnavailable only if every request failed (nothing came back at all),
+    so "player has no games" and "API unreachable" are told apart.
+    """
+    frames, errors = [], []
     for stype in season_types:
         try:
             df = _fetch_game_log(player_id, season, stype)
-        except Exception:
+        except Exception as e:
+            errors.append(e)
             continue
         if not df.empty:
             frames.append(df)
+    if not frames and errors:
+        raise DataUnavailable(f"{type(errors[-1]).__name__}: {errors[-1]}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
