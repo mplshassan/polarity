@@ -243,7 +243,7 @@ if "player_data" in st.session_state:
 
         # radar chart
         fig = build_single_player_figure(player, resolved_name, team_color, highs)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
         # detail table
         _, raw = get_fracs_and_raws(player, highs)
@@ -273,7 +273,7 @@ if "player_data" in st.session_state:
                 "Game High": st.column_config.TextColumn("Game High", width="small"),
             },
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     else:
@@ -361,7 +361,7 @@ if "player_data" in st.session_state:
             color2,
             combined_highs,
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
         # comparison table
         _, raw1 = get_fracs_and_raws(player, combined_highs)
@@ -415,5 +415,5 @@ if "player_data" in st.session_state:
                 "Game High": st.column_config.TextColumn("Game High", width="small"),
             },
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
